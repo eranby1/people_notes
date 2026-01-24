@@ -1,4 +1,4 @@
-# my_first_app
+# People Notes
 
 A new Flutter project.
 
