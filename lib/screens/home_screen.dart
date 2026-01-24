@@ -7,8 +7,8 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import '../models/person_note.dart'; // קישור למודל
-import 'detail_screen.dart'; // קישור למסך הפרטים
+import '../models/person_note.dart';
+import 'detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'screens/home_screen.dart'; // מקשר למסך הראשי
+import 'screens/home_screen.dart';
 
 void main() {
   runApp(const PeopleNotesApp());
@@ -14,14 +14,14 @@ class PeopleNotesApp extends StatelessWidget {
       title: 'People Notes',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
+        // חזרנו לצבע הטורקיז המקורי שאהבת
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
       ),
       builder: (context, child) {
-        // מגדיר כיוון ימין-לשמאל (RTL) לכל האפליקציה
         return Directionality(textDirection: TextDirection.rtl, child: child!);
       },
-      home: const HomeScreen(), // מפעיל את המסך הראשי מהתיקייה החדשה
+      home: const HomeScreen(),
     );
   }
 }
