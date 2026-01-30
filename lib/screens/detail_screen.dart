@@ -1,7 +1,10 @@
-import 'dart:io';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import '../models/person_note.dart'; // הקישור לקובץ המודל
+import 'package:intl/intl.dart';
+import '../models/person_note.dart';
+import '../notification_service.dart'; // חשוב: קישור לשירות ההתראות
 
 class PersonDetailScreen extends StatefulWidget {
   final PersonNote person;
@@ -21,19 +24,100 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
     super.initState();
   }
 
+  // --- לוגיקה של תזכורות ---
+  Future<void> _pickReminderTime(int index, NoteItem note) async {
+    // 1. בחירת תאריך
+    final DateTime? pickedDate = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime.now(),
+      lastDate: DateTime(2100),
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.light().copyWith(
+            colorScheme: const ColorScheme.light(primary: Colors.teal),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (pickedDate == null) return;
+
+    // 2. בחירת שעה
+    if (!mounted) return;
+    final TimeOfDay? pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.light().copyWith(
+            colorScheme: const ColorScheme.light(primary: Colors.teal),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (pickedTime == null) return;
+
+    // 3. איחוד לתאריך שלם
+    final DateTime finalDateTime = DateTime(
+      pickedDate.year,
+      pickedDate.month,
+      pickedDate.day,
+      pickedTime.hour,
+      pickedTime.minute,
+    );
+
+    // 4. שמירה ותזמון
+    setState(() {
+      note.reminderDate = finalDateTime;
+    });
+
+    // יצירת מזהה ייחודי להתראה (משתמשים בקוד ההאש של האובייקט)
+    int notificationId = note.hashCode;
+
+    await NotificationService().scheduleNoteReminder(
+      notificationId,
+      'תזכורת: ${widget.person.name}',
+      note.content,
+      finalDateTime,
+    );
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'תזכורת נקבעה ל-${DateFormat('dd/MM HH:mm').format(finalDateTime)}',
+        ),
+      ),
+    );
+  }
+
+  void _cancelReminder(NoteItem note) async {
+    int notificationId = note.hashCode;
+    await NotificationService().cancelNotification(notificationId);
+
+    setState(() {
+      note.reminderDate = null;
+    });
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('התזכורת בוטלה')));
+  }
+
+  // --- לוגיקה קיימת ---
+
   void _saveAndClose() {
     if (!mounted) return;
-
     _speech.stop();
-
     if (_isListening && Navigator.canPop(context)) {
       Navigator.pop(context);
     }
-
     setState(() {
       _isListening = false;
     });
-
     if (_liveText.isNotEmpty && _liveText != "מקשיב...") {
       _addNote(_liveText);
     }
@@ -50,15 +134,12 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
         _isListening = true;
         _liveText = "מקשיב...";
       });
-
       _showListeningDialog();
-
       _speech.listen(
         onResult: (val) {
           setState(() {
             _liveText = val.recognizedWords;
           });
-
           if (val.finalResult) {
             Future.delayed(const Duration(milliseconds: 500), () {
               _saveAndClose();
@@ -130,17 +211,21 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
 
   void _addNote(String content) {
     setState(() {
-      widget.person.notes.add(content);
+      widget.person.notes.add(NoteItem(content: content, date: DateTime.now()));
     });
   }
 
   void _editNote(int index, String newContent) {
     setState(() {
-      widget.person.notes[index] = newContent;
+      widget.person.notes[index].content = newContent;
     });
   }
 
   void _deleteNote(int index) {
+    // אם יש תזכורת, צריך לבטל אותה לפני המחיקה
+    if (widget.person.notes[index].reminderDate != null) {
+      _cancelReminder(widget.person.notes[index]);
+    }
     setState(() {
       widget.person.notes.removeAt(index);
     });
@@ -148,7 +233,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
 
   void _showEditNoteDialog(int index) {
     TextEditingController controller = TextEditingController(
-      text: widget.person.notes[index],
+      text: widget.person.notes[index].content,
     );
     showDialog(
       context: context,
@@ -257,16 +342,23 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    Uint8List? personImage;
+    if (widget.person.imageBase64 != null) {
+      try {
+        personImage = base64Decode(widget.person.imageBase64!);
+      } catch (_) {}
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Row(
           children: [
-            if (widget.person.imagePath != null)
+            if (personImage != null)
               CircleAvatar(
-                backgroundImage: FileImage(File(widget.person.imagePath!)),
+                backgroundImage: MemoryImage(personImage),
                 radius: 16,
               ),
-            if (widget.person.imagePath != null) const SizedBox(width: 10),
+            if (personImage != null) const SizedBox(width: 10),
             Text(widget.person.name),
           ],
         ),
@@ -274,7 +366,6 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
           IconButton(
             icon: const Icon(Icons.edit),
             onPressed: _showEditPersonDetailsDialog,
-            tooltip: 'ערוך פרטי איש קשר',
           ),
         ],
       ),
@@ -288,7 +379,21 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
           : ListView.builder(
               itemCount: widget.person.notes.length,
               itemBuilder: (context, index) {
-                final noteContent = widget.person.notes[index];
+                final note = widget.person.notes[index];
+                String formattedDate = DateFormat(
+                  'dd/MM/yyyy HH:mm',
+                ).format(note.date);
+
+                // האם יש תזכורת פעילה?
+                bool hasReminder =
+                    note.reminderDate != null &&
+                    note.reminderDate!.isAfter(DateTime.now());
+                String? reminderText;
+                if (hasReminder) {
+                  reminderText = DateFormat(
+                    'dd/MM HH:mm',
+                  ).format(note.reminderDate!);
+                }
 
                 return Dismissible(
                   key: UniqueKey(),
@@ -299,9 +404,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                       builder: (BuildContext context) {
                         return AlertDialog(
                           title: const Text("מחיקת פתק"),
-                          content: const Text(
-                            "האם אתה בטוח שברצונך למחוק את הפתק הזה?",
-                          ),
+                          content: const Text("האם למחוק את הפתק?"),
                           actions: <Widget>[
                             TextButton(
                               onPressed: () => Navigator.of(context).pop(false),
@@ -327,7 +430,84 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                     ),
                     child: ListTile(
                       leading: const Icon(Icons.chat_bubble_outline),
-                      title: Text(noteContent),
+                      title: Text(note.content),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            formattedDate,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                          if (hasReminder)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4.0),
+                              child: Row(
+                                children: [
+                                  const Icon(
+                                    Icons.alarm,
+                                    size: 14,
+                                    color: Colors.teal,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    "תזכורת: $reminderText",
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.teal,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                      // כפתור הפעמון החדש
+                      trailing: IconButton(
+                        icon: Icon(
+                          hasReminder
+                              ? Icons.notifications_active
+                              : Icons.notifications_none,
+                          color: hasReminder ? Colors.teal : Colors.grey,
+                        ),
+                        onPressed: () {
+                          if (hasReminder) {
+                            // אם כבר יש, לחיצה תציע לבטל או לשנות
+                            showDialog(
+                              context: context,
+                              builder: (context) => AlertDialog(
+                                title: const Text('ניהול תזכורת'),
+                                content: Text('יש תזכורת ל-$reminderText'),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () {
+                                      Navigator.pop(context);
+                                      _cancelReminder(note);
+                                    },
+                                    child: const Text(
+                                      'בטל תזכורת',
+                                      style: TextStyle(color: Colors.red),
+                                    ),
+                                  ),
+                                  TextButton(
+                                    onPressed: () {
+                                      Navigator.pop(context);
+                                      _pickReminderTime(index, note);
+                                    },
+                                    child: const Text('שנה זמן'),
+                                  ),
+                                ],
+                              ),
+                            );
+                          } else {
+                            // אם אין, קבע חדשה
+                            _pickReminderTime(index, note);
+                          }
+                        },
+                      ),
                       onTap: () => _showEditNoteDialog(index),
                     ),
                   ),
@@ -338,12 +518,14 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           FloatingActionButton(
+            heroTag: "micBtn",
             backgroundColor: Colors.teal,
             onPressed: _listen,
             child: const Icon(Icons.mic, color: Colors.white),
           ),
           const SizedBox(width: 16),
           FloatingActionButton.extended(
+            heroTag: "textBtn",
             onPressed: _showAddNoteDialog,
             label: const Text('טקסט'),
             icon: const Icon(Icons.text_fields),

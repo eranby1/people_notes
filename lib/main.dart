@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
-import 'screens/home_screen.dart';
+import 'screens/home_screen.dart'; // קישור למסך הראשי שנמצא בתיקיית screens
+import 'notification_service.dart'; // קישור לשירות ההתראות שנמצא ליד ה-main
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // אתחול שירות ההתראות לפני שהאפליקציה עולה
+  await NotificationService().init();
   runApp(const PeopleNotesApp());
 }
 
@@ -14,10 +18,10 @@ class PeopleNotesApp extends StatelessWidget {
       title: 'People Notes',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        // חזרנו לצבע הטורקיז המקורי שאהבת
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
       ),
+      // תמיכה בעברית (יישור לימין)
       builder: (context, child) {
         return Directionality(textDirection: TextDirection.rtl, child: child!);
       },

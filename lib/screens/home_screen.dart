@@ -1,13 +1,12 @@
-import 'dart:convert';
-import 'dart:io';
+import 'dart:convert'; // המרת תמונות לטקסט
+import 'dart:typed_data'; // טיפול בבייטים של תמונה
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
-import '../models/person_note.dart';
+import 'package:image_picker/image_picker.dart'; // בחירת תמונה מהגלריה
+import 'package:intl/intl.dart'; // לעיצוב תאריכים
+import '../models/person_note.dart'; // שים לב לנתיב הזה - הוא חשוב!
 import 'detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -30,6 +29,39 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadData();
   }
 
+  // --- טעינת נתונים ---
+  Future<void> _loadData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final String? peopleString = prefs.getString('people_list');
+
+    if (peopleString != null) {
+      try {
+        List<dynamic> jsonList = jsonDecode(peopleString);
+        setState(() {
+          people = jsonList.map((json) => PersonNote.fromJson(json)).toList();
+          filteredPeople = people;
+          isLoading = false;
+        });
+      } catch (e) {
+        debugPrint("Error loading data: $e");
+        setState(() => isLoading = false);
+      }
+    } else {
+      setState(() {
+        isLoading = false;
+        filteredPeople = [];
+      });
+    }
+  }
+
+  // --- שמירת נתונים ---
+  Future<void> _saveData() async {
+    final prefs = await SharedPreferences.getInstance();
+    String encodedData = jsonEncode(people.map((e) => e.toJson()).toList());
+    await prefs.setString('people_list', encodedData);
+  }
+
+  // --- סינון וחיפוש ---
   void _runFilter(String enteredKeyword) {
     List<PersonNote> results = [];
     if (enteredKeyword.isEmpty) {
@@ -49,56 +81,34 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> _loadData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final String? peopleString = prefs.getString('people_list');
-
-    if (peopleString != null) {
-      List<dynamic> jsonList = jsonDecode(peopleString);
-      setState(() {
-        people = jsonList.map((json) => PersonNote.fromJson(json)).toList();
-        filteredPeople = people;
-        isLoading = false;
-      });
-    } else {
-      setState(() {
-        isLoading = false;
-        filteredPeople = [];
-      });
-    }
-  }
-
-  Future<void> _saveData() async {
-    final prefs = await SharedPreferences.getInstance();
-    String encodedData = jsonEncode(people.map((e) => e.toJson()).toList());
-    await prefs.setString('people_list', encodedData);
-  }
-
-  Future<String?> _pickAndSaveImage() async {
+  // --- בחירת תמונה מהגלריה והמרה ל-Base64 ---
+  Future<String?> _pickImageBase64() async {
     try {
       final ImagePicker picker = ImagePicker();
-      final XFile? image = await picker.pickImage(source: ImageSource.gallery);
+      final XFile? image = await picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 50,
+      ); // איכות מוקטנת לחסכון במקום
 
       if (image == null) return null;
 
-      final directory = await getApplicationDocumentsDirectory();
-      final String newPath = p.join(directory.path, p.basename(image.path));
-      final File localImage = await File(image.path).copy(newPath);
-
-      return localImage.path;
+      // קריאת הקובץ והמרה לטקסט
+      Uint8List imageBytes = await image.readAsBytes();
+      return base64Encode(imageBytes);
     } catch (e) {
       debugPrint('Error picking image: $e');
       return null;
     }
   }
 
-  void _addPerson(String name, String phone, String? imagePath) {
+  // --- הוספת איש קשר ---
+  void _addPerson(String name, String phone, String? base64Image) {
     setState(() {
       PersonNote newPerson = PersonNote(
         name: name,
         phoneNumber: phone,
         notes: [],
-        imagePath: imagePath,
+        imageBase64: base64Image, // שימוש בשדה החדש
       );
       people.add(newPerson);
       _searchController.clear();
@@ -108,7 +118,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _saveData();
   }
 
+  // --- מחיקת איש קשר ---
   void _deletePerson(PersonNote personToDelete) {
+    int originalIndex = people.indexOf(personToDelete);
     setState(() {
       people.remove(personToDelete);
       _runFilter(_searchController.text);
@@ -122,7 +134,7 @@ class _HomeScreenState extends State<HomeScreen> {
           label: 'ביטול',
           onPressed: () {
             setState(() {
-              people.add(personToDelete);
+              people.insert(originalIndex, personToDelete);
               _runFilter(_searchController.text);
             });
             _saveData();
@@ -132,6 +144,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // --- וואטסאפ ---
   Future<void> _launchWhatsApp(String phone) async {
     if (phone.isEmpty) return;
     String cleanPhone = phone.replaceAll(RegExp(r'\D'), '');
@@ -148,116 +161,148 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // --- ייבוא מאנשי הקשר (כולל תמונה!) ---
   Future<void> _pickContact(
     TextEditingController nameCtrl,
     TextEditingController phoneCtrl,
+    ValueNotifier<String?> imageNotifier,
   ) async {
     if (await FlutterContacts.requestPermission()) {
       final contact = await FlutterContacts.openExternalPick();
       if (contact != null) {
+        // משיכת פרטים מלאים כולל תמונה ברזולוציה גבוהה
+        final fullContact = await FlutterContacts.getContact(
+          contact.id,
+          withPhoto: true,
+        );
+
         setState(() {
           nameCtrl.text = contact.displayName;
           if (contact.phones.isNotEmpty) {
             phoneCtrl.text = contact.phones.first.number;
+          }
+          // אם יש תמונה לאיש הקשר, נמיר אותה ל-Base64
+          if (fullContact?.photo != null) {
+            imageNotifier.value = base64Encode(fullContact!.photo!);
           }
         });
       }
     }
   }
 
+  // --- דיאלוג הוספה ---
   void _showAddPersonDialog() {
     TextEditingController nameController = TextEditingController();
     TextEditingController phoneController = TextEditingController();
-    String? tempImagePath;
+    // שימוש ב-ValueNotifier כדי לעדכן את התמונה בדיאלוג בלי לבנות את כולו מחדש
+    ValueNotifier<String?> tempImageBase64 = ValueNotifier(null);
 
     showDialog(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          return AlertDialog(
-            title: const Text('איש קשר חדש'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                GestureDetector(
-                  onTap: () async {
-                    String? path = await _pickAndSaveImage();
-                    if (path != null) {
-                      setDialogState(() {
-                        tempImagePath = path;
-                      });
-                    }
-                  },
-                  child: CircleAvatar(
-                    radius: 40,
-                    backgroundColor: Colors.grey[200],
-                    backgroundImage: tempImagePath != null
-                        ? FileImage(File(tempImagePath!))
-                        : null,
-                    child: tempImagePath == null
-                        ? const Icon(
-                            Icons.add_a_photo,
-                            size: 30,
-                            color: Colors.grey,
-                          )
-                        : null,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  'לחץ להוספת תמונה',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-                const SizedBox(height: 20),
-
-                OutlinedButton.icon(
-                  onPressed: () =>
-                      _pickContact(nameController, phoneController),
-                  icon: const Icon(Icons.contacts),
-                  label: const Text('ייבא מאנשי קשר בנייד'),
-                ),
-                const SizedBox(height: 20),
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'שם',
-                    prefixIcon: Icon(Icons.person),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: phoneController,
-                  keyboardType: TextInputType.phone,
-                  decoration: const InputDecoration(
-                    labelText: 'טלפון',
-                    prefixIcon: Icon(Icons.phone),
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('ביטול'),
-              ),
-              FilledButton(
-                onPressed: () {
-                  if (nameController.text.isNotEmpty) {
-                    _addPerson(
-                      nameController.text,
-                      phoneController.text,
-                      tempImagePath,
-                    );
-                    Navigator.pop(context);
+      builder: (context) => AlertDialog(
+        title: const Text('איש קשר חדש'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // תצוגת תמונה
+              ValueListenableBuilder<String?>(
+                valueListenable: tempImageBase64,
+                builder: (context, base64Img, child) {
+                  Uint8List? bytes;
+                  if (base64Img != null) {
+                    try {
+                      bytes = base64Decode(base64Img);
+                    } catch (_) {}
                   }
+
+                  return GestureDetector(
+                    onTap: () async {
+                      String? img = await _pickImageBase64();
+                      if (img != null) {
+                        tempImageBase64.value = img;
+                      }
+                    },
+                    child: CircleAvatar(
+                      radius: 40,
+                      backgroundColor: Colors.grey[200],
+                      backgroundImage: bytes != null
+                          ? MemoryImage(bytes)
+                          : null,
+                      child: bytes == null
+                          ? const Icon(
+                              Icons.add_a_photo,
+                              size: 30,
+                              color: Colors.grey,
+                            )
+                          : null,
+                    ),
+                  );
                 },
-                child: const Text('צור'),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'לחץ להוספת תמונה',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 20),
+
+              OutlinedButton.icon(
+                onPressed: () => _pickContact(
+                  nameController,
+                  phoneController,
+                  tempImageBase64,
+                ),
+                icon: const Icon(Icons.contacts),
+                label: const Text('ייבא מאנשי קשר'),
+              ),
+              const SizedBox(height: 20),
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'שם',
+                  prefixIcon: Icon(Icons.person),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: phoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(
+                  labelText: 'טלפון',
+                  prefixIcon: Icon(Icons.phone),
+                ),
               ),
             ],
-          );
-        },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('ביטול'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (nameController.text.isNotEmpty) {
+                _addPerson(
+                  nameController.text,
+                  phoneController.text,
+                  tempImageBase64.value,
+                );
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('צור'),
+          ),
+        ],
       ),
     );
+  }
+
+  // --- צבעים לאווטאר ברירת מחדל ---
+  Color _getAvatarColor(String name) {
+    if (name.isEmpty) return Colors.teal;
+    return Colors.primaries[name.hashCode % Colors.primaries.length];
   }
 
   @override
@@ -308,31 +353,47 @@ class _HomeScreenState extends State<HomeScreen> {
               itemBuilder: (context, index) {
                 final person = filteredPeople[index];
 
+                // פענוח תמונה (אם יש)
+                Uint8List? personImage;
+                if (person.imageBase64 != null) {
+                  try {
+                    personImage = base64Decode(person.imageBase64!);
+                  } catch (_) {}
+                }
+
+                // טקסט תחתון: תאריך ההערה האחרונה
+                String subtitleText = '${person.notes.length} פתקים';
+                if (person.notes.isNotEmpty) {
+                  String date = DateFormat(
+                    'dd/MM',
+                  ).format(person.notes.last.date);
+                  subtitleText += ' • אחרון ב-$date';
+                }
+
                 return Dismissible(
-                  key: ValueKey(person),
+                  key: ValueKey(
+                    person,
+                  ), // שימוש ב-Object Key במקום String Key למניעת באגים
                   background: Container(
                     color: Colors.red,
                     alignment: Alignment.centerRight,
                     padding: const EdgeInsets.only(right: 20),
                     child: const Icon(Icons.delete, color: Colors.white),
                   ),
-                  direction: DismissDirection.startToEnd,
                   confirmDismiss: (direction) async {
                     return await showDialog(
                       context: context,
                       builder: (BuildContext context) {
                         return AlertDialog(
                           title: const Text("מחיקת איש קשר"),
-                          content: Text(
-                            "האם אתה בטוח שברצונך למחוק את ${person.name}?",
-                          ),
+                          content: Text("למחוק את ${person.name}?"),
                           actions: <Widget>[
                             TextButton(
-                              onPressed: () => Navigator.of(context).pop(false),
+                              onPressed: () => Navigator.pop(context, false),
                               child: const Text("ביטול"),
                             ),
                             TextButton(
-                              onPressed: () => Navigator.of(context).pop(true),
+                              onPressed: () => Navigator.pop(context, true),
                               child: const Text(
                                 "מחק",
                                 style: TextStyle(color: Colors.red),
@@ -350,13 +411,17 @@ class _HomeScreenState extends State<HomeScreen> {
                       vertical: 5,
                     ),
                     child: ListTile(
+                      // תצוגת האווטאר המשופרת
                       leading: CircleAvatar(
-                        backgroundImage: person.imagePath != null
-                            ? FileImage(File(person.imagePath!))
+                        radius: 25,
+                        backgroundColor: _getAvatarColor(person.name),
+                        backgroundImage: personImage != null
+                            ? MemoryImage(personImage)
                             : null,
-                        child: person.imagePath == null
+                        child: personImage == null
                             ? Text(
                                 person.name.isNotEmpty ? person.name[0] : '?',
+                                style: const TextStyle(color: Colors.white),
                               )
                             : null,
                       ),
@@ -364,7 +429,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         person.name,
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
-                      subtitle: Text('${person.notes.length} פתקים'),
+                      subtitle: Text(subtitleText),
                       trailing: person.phoneNumber.isNotEmpty
                           ? IconButton(
                               icon: const Icon(Icons.chat, color: Colors.green),
